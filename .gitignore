@@ -1,0 +1,8 @@
+*.pyc
+*.pyo
+__pycache__/
+.venv/
+.env
+# data/ is not included in this repo (third-party odds/results data) – see README
+data/
+.DS_Store

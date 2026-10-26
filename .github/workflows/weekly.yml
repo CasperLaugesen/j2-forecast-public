@@ -1,0 +1,63 @@
+# Kører J2-pipelinen automatisk mandag og torsdag.
+#  - mandag:  weekendens resultater + odds og rapport til evt. midtugerunde
+#  - torsdag: midtugerundens resultater + odds og rapport til weekendens kampe
+#  (alle trin kører begge dage)
+# Kan også startes manuelt: GitHub -> Actions -> weekly-j2 -> "Run workflow".
+name: weekly-j2
+
+on:
+  schedule:
+    # Minut 17, ikke 0: GitHub forsinker/dropper ofte kørsler planlagt på hele timer.
+    - cron: "17 5 * * 1"    # mandag 05:17 UTC (07:17 dansk sommertid / 06:17 vintertid)
+    - cron: "17 5 * * 4"    # torsdag 05:17 UTC
+  workflow_dispatch:         # knap til manuel kørsel
+
+permissions:
+  contents: write            # så workflowet må committe den opdaterede database tilbage
+
+concurrency:
+  group: weekly-j2           # aldrig to kørsler på samme tid (ellers kan databasen blive overskrevet)
+  cancel-in-progress: false
+
+jobs:
+  run:
+    # Kører kun i det private repo, hvor databasen og API-nøglerne ligger.
+    # I dette offentlige repo er workflowet med som dokumentation.
+    if: github.repository == 'CasperLaugesen/j2-forecast'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ODDSPAPI_KEY: ${{ secrets.ODDSPAPI_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Installér pakker
+        run: uv sync
+
+      - name: 1) Hent resultater
+        run: uv run python src/fetch_results.py
+
+      - name: 2) Hent kampprogram og odds
+        run: uv run python src/fetch_weekly.py
+
+      - name: 3) Forudsig kommende kampe
+        run: uv run python src/predict_upcoming.py
+
+      - name: 4) Ugerapport (agent)
+        run: uv run python src/report_agent.py
+
+      - name: 5) Evaluer rapport-agenten mod resultaterne
+        if: always()           # måling skal køre, selv hvis rapporten fejlede
+        run: uv run python src/eval_reports.py
+
+      - name: Gem opdateret database, log og rapport i repoet
+        if: always()           # gem det, der nåede at blive hentet, selv hvis et senere trin fejlede
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/j2.db data/agent_log.jsonl reports/ || true
+          git commit -m "Automatisk opdatering $(date -u +%F)" || echo "Intet nyt at committe"
+          git push
