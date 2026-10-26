@@ -8,7 +8,7 @@ from backtest_market import no_vig, walk_forward
 from model import predict, team_strengths
 
 
-def test_sandsynligheder_summerer_til_1():
+def test_probabilities_sum_to_one():
     # Lav to hold i hånden i stedet for at læse databasen:
     # A er et stærkt hold, B et svagt (ratings relativt til ligagennemsnit 1.00).
     s = pd.DataFrame({"att": [1.4, 0.8], "def": [0.7, 1.3]}, index=["A", "B"])
@@ -23,7 +23,7 @@ def test_sandsynligheder_summerer_til_1():
 
 
 # TODO (Casper): test 2 – no_vig(2.0, 3.5, 4.0) summerer til 1 og favoritten er størst
-def test_no_vig_fjerner_margin():
+def test_no_vig_removes_margin():
     odds = (2.0, 3.5, 4.0)                      # hjemme, uafgjort, ude
     p = no_vig(*odds)
 
@@ -35,7 +35,7 @@ def test_no_vig_fjerner_margin():
 
 
 # TODO (Casper): test 3 – shrinkage: én 4-0-sejr giver att tæt på 1 med k=12, højt med k=0
-def test_shrinkage_traekker_mod_gennemsnit():
+def test_shrinkage_pulls_towards_average():
     # 6 "normale" 1-1-kampe mellem andre hold, så ligagennemsnittet er realistisk.
     # Uden dem ville As 4-0 selv VÆRE ligagennemsnittet, og att ville blive 1.0 uanset k.
     kampe = [("C", "D", 1, 1), ("E", "F", 1, 1), ("D", "E", 1, 1),
@@ -68,7 +68,7 @@ def lav_saeson(n_dage=20, seed=1):
     return pd.DataFrame(kampe)
 
 
-def test_ingen_look_ahead(monkeypatch):
+def test_no_look_ahead(monkeypatch):
     import backtest_market
     monkeypatch.setattr(backtest_market, "MIN_TRAIN", 15)   # små falske data -> lavere krav
 
