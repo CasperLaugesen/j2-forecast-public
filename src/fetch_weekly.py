@@ -7,7 +7,7 @@ Tabeller:
   odds_snapshots  én række pr. kamp × bookmaker × hentetidspunkt (gemmes, aldrig overskrevet)
                   -> så kan vi senere se, hvordan oddsene bevægede sig frem mod kampen
 
-OddsPapi-struktur (fundet med explore_oddspapi_odds.py):
+OddsPapi-struktur (fundet med scratch/explore_oddspapi_odds.py):
   bookmakerOdds[<bookmaker>]["markets"]["101"] = 1X2
   outcomes "101" = hjemme, "102" = uafgjort, "103" = ude
   outcomes[...]["players"]["0"]["price"] = odds
