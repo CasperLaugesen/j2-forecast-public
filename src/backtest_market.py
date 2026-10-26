@@ -44,7 +44,11 @@ def no_vig(o1, ox, o2):
 
 
 def backtest(season, k=K):
-    df = load_j1(season)
+    return walk_forward(load_j1(season), season, k)
+
+
+def walk_forward(df, season, k=K):
+    """Selve walk-forward-løkken. Tager et DataFrame, så den kan testes uden databasen."""
     rows = []
     for d in sorted(df["date"].unique()):
         train = df[df["date"] < d]                       # KUN fortiden

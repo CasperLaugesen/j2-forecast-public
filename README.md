@@ -311,6 +311,17 @@ and backoff) – both errors only appeared outside local testing.
 
 ---
 
+## Tests
+
+`uv run pytest` – four tests of the parts the conclusion rests on (`tests/test_model.py`):
+
+| Test | Why it matters |
+|---|---|
+| H/D/A probabilities sum to 1 | Log loss is only meaningful for proper probabilities. (The 0–10 goal grid loses ≈0.0001 – documented, negligible.) |
+| Margin removal | Without it, market probabilities sum to ~1.04, which lowers the market's log loss and makes the model look worse than it is. |
+| Shrinkage | One 4–0 win gives attack 2.8 and defence 0.0 with k = 0 – the kind of rating that produced the Excel model's 20–40 % "edges". k = 12 pulls it to 1.17 / 0.94. |
+| No look-ahead | Changing *future* results must not change predictions up to and including that day. Verified to fail if training uses `<=` instead of `<`, or the whole season. |
+
 ## How to run
 
 The database is not included (see *Automation*), so start by rebuilding it with the
