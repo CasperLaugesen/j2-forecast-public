@@ -184,6 +184,41 @@ comparison, 2023–2024 combined. The 0.01 rule against the market still applies
 - Caveat: k = 12 was tuned for the current model on these seasons, which if anything
   favours the current model.
 
+#### 6b. Out-of-sample check on 2025 (pre-registered 26 Oct 2026, before the 2025 run)
+
+2023–2024 is where the idea was developed, so the real test is a season nothing was tuned
+on. 2025 J2 results (380 matches) come from the J.League data site; the prior uses 2024 xG
+(known before the 2025 season). API-Football's free plan does not cover 2025. No odds for
+2025, so no market comparison.
+
+- **Primary (decides):** the exact variant above, unchanged (k = 12, newcomers = 1.00,
+  from 20 matches played). Same rule: the xG prior must be **at least 0.005 better** than
+  the current model on 2025. If not, it does not go into the weekly pipeline.
+- **Secondary (exploratory, does not decide):** same, but teams without a J2 season the
+  year before start from the average first-season xG rating of earlier newcomers, measured
+  on 2023–2024: relegated from J1 att 1.29 / def 0.74 (n = 3), promoted from J3 att 0.88 /
+  def 1.22 (n = 4). Small samples. 6 of the 20 teams in 2025 are newcomers (3 relegated,
+  3 promoted).
+
+**Result 2025** (`src/backtest_xg_prior.py 2025`, 360 matches from 20 played):
+
+| 2025 | Current model | xG prior | Difference | ± 1 SE |
+|---|---|---|---|---|
+| **Primary** | 1.0770 | 1.0759 | **−0.0011** | 0.0047 |
+| Secondary (newcomer priors) | 1.0770 | 1.0724 | −0.0046 | 0.0079 |
+| Primary variant, from 100 played | 1.0763 | 1.0714 | −0.0048 | 0.0037 |
+
+- **The improvement did not hold up.** On the season nothing was tuned on, the xG prior is
+  only 0.0011 better – far from the 0.005 threshold and well within noise. By the
+  pre-registered rule it does **not** go into the weekly pipeline.
+- The 2023–2024 result (−0.0052) was most likely partly luck: it passed by 0.0002, and
+  the honest out-of-sample number is much smaller.
+- The secondary variant (starting newcomers above/below average) moves in
+  the expected direction (−0.0046), but the uncertainty is larger than the effect, the
+  newcomer priors rest on 7 teams, and it was not the deciding test. Worth a new
+  pre-registered test on the 2026/27 season, not a conclusion.
+- **Overall conclusion for xG: no robust improvement from last season's xG.**
+
 ---
 
 ## Part 2 – Automated weekly pipeline with LLM agents
@@ -301,6 +336,8 @@ uv run python src/backtest_j2_market.py   # J2: model vs. CheckBestOdds
 
 # data/xg_season.csv (season,team,xg,xga) – club xG/xGA from jleague.jp, collected by hand
 uv run python src/backtest_xg_prior.py    # follow-up: last season's xG as prior (section 6)
+# data/j2_2025_results.csv (date,home,away,home_goals,away_goals) – from data.j-league.or.jp
+uv run python src/backtest_xg_prior.py 2025   # out-of-sample check on 2025 (section 6b)
 ```
 
 **Part 2 – weekly pipeline** (normally run by GitHub Actions)
@@ -315,8 +352,8 @@ uv run python src/report_agent.py         # weekly report -> reports/
 
 ## Next steps
 
-- **xG – partly answered (section 6).** Last season's xG as a starting point gave a small
-  improvement that only just passes the pre-registered rule, and the model still loses to
-  the market. Not yet tested: per-match xG within the season (no free J2 source found), and
-  whether the xG prior should replace the current model in the weekly pipeline. That should
-  only happen if the gain holds up on a season it was not tested on.
+- **xG – answered for season-level data (section 6).** Last season's xG as a starting point
+  passed on 2023–2024 by a hair but did not hold up out-of-sample on 2025. Not in the
+  pipeline. Still open: per-match xG within the season (no free J2 source found), and
+  newcomer priors for promoted/relegated teams (promising direction, too little data –
+  could be pre-registered and tested on 2026/27).

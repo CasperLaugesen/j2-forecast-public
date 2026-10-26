@@ -18,7 +18,23 @@ import pandas as pd
 from model import DB, K, load_matches, predict
 
 XG_CSV = "data/xg_season.csv"
+RESULTS_2025_CSV = "data/j2_2025_results.csv"   # fra J.League-datasiden (API-Football gratis dækker ikke 2025)
 TEST_SEASONS = [2023, 2024]
+
+# Afsnit 6b, sekundær variant: udgangspunkt for hold uden J2-sæson året før =
+# gennemsnitlig xG-rating i første J2-sæson for tidligere ned-/oprykkere (målt på 2023-2024).
+NEWCOMER_PRIOR = {"relegated": (1.285, 0.743), "promoted": (0.881, 1.216)}
+NEWCOMERS_2025 = {"Consadole Sapporo": "relegated", "Sagan Tosu": "relegated",
+                  "Jubilo Iwata": "relegated", "Omiya Ardija": "promoted",
+                  "FC Imabari": "promoted", "Kataller Toyama": "promoted"}
+
+
+def load_season(season):
+    if season == 2025:
+        return (pd.read_csv(RESULTS_2025_CSV)
+                .rename(columns={"home_goals": "hg", "away_goals": "ag"})
+                .sort_values("date", kind="stable").reset_index(drop=True))
+    return load_matches(season)
 PRIMARY_MIN_TRAIN = 20       # primær sammenligning: fra 20 spillede kampe
 SECONDARY_MIN_TRAIN = 100    # sekundær: den oprindelige opsætning
 THRESHOLD = 0.005            # beslutningsregel: varianten skal være mindst 0,005 bedre
@@ -66,9 +82,12 @@ def market_probs(season):
     return pd.concat([o[["home", "away"]], p], axis=1)
 
 
-def backtest(season, k=K):
-    df = load_matches(season)
+def backtest(season, k=K, newcomers=None):
+    df = load_season(season)
     prior_att, prior_def = xg_priors(season - 1)
+    for team, grp in (newcomers or {}).items():          # sekundær variant (6b)
+        assert team not in prior_att and team in set(df.home), team
+        prior_att[team], prior_def[team] = NEWCOMER_PRIOR[grp]
     rows = []
     for d in sorted(df["date"].unique()):
         train = df[df["date"] < d]                       # KUN fortiden
@@ -93,6 +112,21 @@ def backtest(season, k=K):
     return bt
 
 
+def run_2025():
+    """Afsnit 6b: out-of-sample på 2025 (forhåndsregistreret)."""
+    prim = backtest(2025)
+    sec = backtest(2025, newcomers=NEWCOMERS_2025)
+    assert (prim[["date", "home", "away"]].values == sec[["date", "home", "away"]].values).all()
+    print("Hold uden 2024-xG (får 1,00 i primær):",
+          sorted(set(prim.home) - set(xg_priors(2024)[0])))
+    diff = report(prim, "2025 PRIMÆR – fra 20 spillede kampe")
+    d2 = report(sec, "2025 SEKUNDÆR – med udgangspunkt for op-/nedrykkere")
+    report(prim[prim.n_train >= SECONDARY_MIN_TRAIN], "2025 primær variant, fra 100 spillede kampe")
+    verdict = "FORBEDRING" if diff <= -THRESHOLD else "INGEN FORBEDRING"
+    print(f"\nBeslutningsregel 2025 (≥ {THRESHOLD} bedre): {diff:+.4f} → {verdict}")
+    print(f"Sekundær (afgør ikke): {d2:+.4f}")
+
+
 def ll(p):
     return float(-np.log(p).mean())
 
@@ -105,12 +139,18 @@ def report(bt, label):
     print(f"  xG-prior        : {ll(bt.xgp):.4f}")
     print(f"  Forskel (xG − nuværende): {d.mean():+.4f}  (± 1 SE {se:.4f})")
     wm = bt.dropna(subset=["mkt"])
+    if len(wm) == 0:
+        return d.mean()
     print(f"  Med odds ({len(wm)} kampe): nuværende {ll(wm.cur):.4f} | xG-prior {ll(wm.xgp):.4f}"
           f" | marked {ll(wm.mkt):.4f}")
     return d.mean()
 
 
 if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["2025"]:
+        run_2025()
+        sys.exit()
     bt = pd.concat([backtest(s) for s in TEST_SEASONS], ignore_index=True)
 
     diff = report(bt, "PRIMÆR – 2023-2024, fra 20 spillede kampe")
