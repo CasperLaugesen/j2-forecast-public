@@ -131,6 +131,59 @@ model error. Betting on the model was stopped.
   used in the J2 market test, which slightly flatters the model. Since the model still loses
   to the market, this does not change the conclusion.
 
+### 6. Follow-up: does last season's xG help? (pre-registered 26 Oct 2026)
+
+Per-match xG for J2 is not freely available, but J.League publishes each club's **season
+total xG and xGA**. A season total cannot be used *within* the same season without
+look-ahead bias, but last season's total is known before the new season starts. So the
+test is: start each team from its previous-season xG rating instead of from the league
+average.
+
+**Variant.** Same model, but shrinkage pulls towards last season's xG rating instead of 1.00:
+
+```
+prior_att = (team xG per match last season) / (league xG per match last season)
+prior_def = (team xGA per match last season) / (league xGA per match last season)
+att = (goals for + k · avg · prior_att) / (expected goals for + k · avg)
+```
+
+Teams without a J2 season the year before (promoted/relegated) get 1.00 – identical to
+the current model. k stays at 12; it is **not** re-tuned for the variant.
+
+**Data.** Club xG/xGA 2022–2024 from J.League's official stats pages, collected once by
+hand. Test seasons: 2023 (prior from 2022) and 2024 (prior from 2023), ~800 matches.
+
+**Evaluation.** Same walk-forward backtest and log loss as above. Primary comparison:
+matches from the point where 20 matches of the season have been played (the prior can only
+matter early, when the current model has little data). Both models are scored on exactly
+the same matches. Secondary (reported, not decisive): the original setup starting after
+100 matches.
+
+**Decision rule (set before running the test):** the xG prior only counts as an improvement
+if its log loss is **at least 0.005 lower** than the current model's on the primary
+comparison, 2023–2024 combined. The 0.01 rule against the market still applies.
+
+**Result** (`src/backtest_xg_prior.py`):
+
+| J2 2023–2024 | Matches | Current model | xG prior | Difference | ± 1 SE |
+|---|---|---|---|---|---|
+| **Primary** (from 20 matches played) | 800 | 1.0493 | **1.0442** | −0.0052 | 0.0036 |
+| – 2023 | 440 | 1.0706 | 1.0690 | −0.0016 | 0.0048 |
+| – 2024 | 360 | 1.0233 | 1.0138 | −0.0095 | 0.0056 |
+| Secondary (from 100 matches played) | 632 | 1.0389 | 1.0317 | −0.0073 | 0.0030 |
+| Market (CheckBestOdds), primary matches | 799 | | | market: **1.0283** | |
+
+- **By the pre-registered rule the xG prior is an improvement** – but only just: −0.0052
+  against a threshold of −0.005, and the difference is only ~1.4 standard errors from zero.
+  It is a weak, not a proven, improvement; most of it comes from 2024.
+- **Unexpected:** the gain is *not* concentrated early in the season, where I expected it.
+  In the first ~100 matches the xG prior is slightly worse (1.0912 vs 1.0884); the gain
+  comes later. I don't have a confirmed explanation.
+- **Against the market nothing changes.** The xG prior is still 0.016 behind the market,
+  well above the 0.01 threshold. Better model, still no edge.
+- Caveat: k = 12 was tuned for the current model on these seasons, which if anything
+  favours the current model.
+
 ---
 
 ## Part 2 – Automated weekly pipeline with LLM agents
@@ -245,6 +298,9 @@ uv run python src/backtest_market.py      # J1: model vs. Pinnacle
 uv run python src/fetch_cbo.py            # J2 odds pages -> data/cbo/
 uv run python src/parse_cbo.py            # J2 odds -> data/j2.db
 uv run python src/backtest_j2_market.py   # J2: model vs. CheckBestOdds
+
+# data/xg_season.csv (season,team,xg,xga) – club xG/xGA from jleague.jp, collected by hand
+uv run python src/backtest_xg_prior.py    # follow-up: last season's xG as prior (section 6)
 ```
 
 **Part 2 – weekly pipeline** (normally run by GitHub Actions)
@@ -259,9 +315,8 @@ uv run python src/report_agent.py         # weekly report -> reports/
 
 ## Next steps
 
-- **Open question – does xG improve the model?** The original Excel model used FootyStats xG
-  (a one-off snapshot of season averages), but it was replaced by goals before it was ever
-  backtested; every result above is for the goals-only model. Plan: check whether a provider
-  (e.g. TheStatsAPI, free trial) has per-match J2 xG for 2022–2024; if so, backtest an xG model
-  walk-forward against the goals model by log loss. If not, use last season's ratings as a
-  prior instead (free – the data is already in the database).
+- **xG – partly answered (section 6).** Last season's xG as a starting point gave a small
+  improvement that only just passes the pre-registered rule, and the model still loses to
+  the market. Not yet tested: per-match xG within the season (no free J2 source found), and
+  whether the xG prior should replace the current model in the weekly pipeline. That should
+  only happen if the gain holds up on a season it was not tested on.
