@@ -28,13 +28,14 @@ REPORT_DIR = "reports"
 
 WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 6}   # 1 søgning pr. hold
 
-VERDICTS = ["explained", "partly", "not_explained"]
+# Binært fra 2026-10-27 (før: explained/partly/not_explained – 13 af 15 blev "partly", så det målte intet)
+LEANS = ["market", "model"]
 
 SAVE_REPORT_TOOL = {
     "name": "save_report",
     "description": (
         "Save the finished weekly report. `markdown`: the full report – it must cover every match you were "
-        "given (use the exact team names), give a verdict per match, and end with a 'Sources' section listing "
+        "given (use the exact team names), give a lean (market or model) per match, and end with a 'Sources' section listing "
         "the URLs you relied on. `verdicts`: the same verdicts in structured form, one per match, so they can "
         "be evaluated against the results later. The tool validates both and returns problems if incomplete."
     ),
@@ -50,16 +51,18 @@ SAVE_REPORT_TOOL = {
                     "properties": {
                         "home": {"type": "string", "description": "Exact home team name as given."},
                         "away": {"type": "string", "description": "Exact away team name as given."},
-                        "verdict": {"type": "string", "enum": VERDICTS,
-                                    "description": "explained = news explains the market's view; "
-                                                   "partly = explains some of it; "
-                                                   "not_explained = no news explains it."},
-                        "reason": {"type": "string", "description": "One sentence."},
+                        "lean": {"type": "string", "enum": LEANS,
+                                 "description": "Which will give the actual result the higher probability: "
+                                                "'market' or 'model'. No middle option."},
+                        "reason": {"type": "string",
+                                   "description": "One sentence citing ONE concrete, checkable fact behind the "
+                                                  "lean: a result with date and score, a named injured or "
+                                                  "suspended player, a line-up or coaching change."},
                         "p_home": {"type": "number", "description": "YOUR probability of a home win (0-1)."},
                         "p_draw": {"type": "number", "description": "YOUR probability of a draw (0-1)."},
                         "p_away": {"type": "number", "description": "YOUR probability of an away win (0-1)."},
                     },
-                    "required": ["home", "away", "verdict", "reason", "p_home", "p_draw", "p_away"],
+                    "required": ["home", "away", "lean", "reason", "p_home", "p_draw", "p_away"],
                 },
             },
         },
@@ -75,9 +78,12 @@ SYSTEM = (
     "For each match: search for recent news on BOTH teams (English and Japanese sources are both fine), "
     "use the 'Recent results' given for each team (already computed from the database, from that team's "
     "own perspective – copy home/away and scores exactly as given, never re-derive them), "
-    "and decide whether the news explains why the market differs from the model.\n"
-    "Verdict per match, one of: 'Explained – market likely right', 'Partly explained', "
-    "'Not explained – no news found'. Be concrete and cite sources. Never give betting advice.\n"
+    "and judge which side is closer to the truth.\n"
+    "Lean per match: 'market' or 'model' – which of the two you expect to give the actual result the "
+    "higher probability. There is no middle option; you must pick one. Back it with one sentence citing "
+    "ONE concrete, checkable fact (a result with date and score, a named injured or suspended player, a "
+    "line-up or coaching change). State it in the report as e.g. 'Lean: market – <reason>'. "
+    "Be concrete and cite sources. Never give betting advice.\n"
     "Write news in your own words (no verbatim quotes, no citation markup); list the links under 'Sources'.\n"
     "Finally, give YOUR OWN forecast per match (p_home, p_draw, p_away, summing to 1), using the model, the "
     "market and the news. Your forecasts are scored against the market by log loss, so only move away from "
@@ -85,7 +91,7 @@ SYSTEM = (
     "reflected in its results (and in the model); news since the last match is new information. "
     "State your forecast in the report as e.g. 'Agent forecast: 45/27/28'.\n"
     f"Write the report in {LANGUAGE}, under 600 words, then call save_report with both the markdown "
-    "and the structured verdicts (explained / partly / not_explained)."
+    "and the structured verdicts (lean: market / model)."
 )
 
 
@@ -171,16 +177,17 @@ def save_verdicts(rows):
             fixture_id    TEXT,
             home          TEXT,
             away          TEXT,
-            verdict       TEXT,   -- explained / partly / not_explained
+            verdict       TEXT,   -- explained / partly / not_explained (kun til og med 2026-10-26)
             reason        TEXT
         )""")
     have = {r[1] for r in con.execute("PRAGMA table_info(report_verdicts)")}
-    for col in ("agent_p1", "agent_pX", "agent_p2"):          # agentens egen forudsigelse (fra 2026-10-22)
+    for col, typ in [("agent_p1", "REAL"), ("agent_pX", "REAL"), ("agent_p2", "REAL"),  # fra 2026-10-22
+                     ("lean", "TEXT")]:                                               # fra 2026-10-27
         if col not in have:
-            con.execute(f"ALTER TABLE report_verdicts ADD COLUMN {col} REAL")
+            con.execute(f"ALTER TABLE report_verdicts ADD COLUMN {col} {typ}")
     con.executemany(
         "INSERT INTO report_verdicts (created_at, report_path, predicted_at, fixture_id, home, away, "
-        "verdict, reason, agent_p1, agent_pX, agent_p2) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        "verdict, lean, reason, agent_p1, agent_pX, agent_p2) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     con.close()
 
@@ -227,7 +234,7 @@ def make_save_report(matches):
         given = {(v.get("home"), v.get("away")): v for v in verdicts}
         missing = [f"{h} vs {a}" for (h, a) in expected if (h, a) not in given]
         unknown = [f"{h} vs {a}" for (h, a) in given if (h, a) not in expected]
-        bad = [v.get("verdict") for v in verdicts if v.get("verdict") not in VERDICTS]
+        bad = [v.get("lean") for v in verdicts if v.get("lean") not in LEANS]
         for v in verdicts:
             ps = [v.get("p_home"), v.get("p_draw"), v.get("p_away")]
             if any(not isinstance(x, (int, float)) for x in ps):
@@ -240,7 +247,7 @@ def make_save_report(matches):
         if unknown:
             problems.append(f"Verdicts for matches not in this report (check exact names): {unknown}")
         if bad:
-            problems.append(f"Invalid verdict values {bad} – use one of {VERDICTS}")
+            problems.append(f"Invalid lean values {bad} – use one of {LEANS}")
         if problems:
             return "NOT SAVED. Problems:\n- " + "\n- ".join(problems), True
 
@@ -253,7 +260,7 @@ def make_save_report(matches):
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         save_verdicts([
             (now, path, r.predicted_at, r.fixture_id, r.home, r.away,
-             given[(r.home, r.away)]["verdict"], given[(r.home, r.away)].get("reason", ""),
+             None, given[(r.home, r.away)]["lean"], given[(r.home, r.away)].get("reason", ""),
              *normalise(given[(r.home, r.away)]))
             for r in matches.itertuples()
         ])

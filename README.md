@@ -1,11 +1,19 @@
 # J2/J1 Forecast – Can a simple Poisson model beat the betting market?
+I rebuilt my Excel betting model in Python, tested it honestly against the betting market, and turned the manual weekly workflow into an automated pipeline with two LLM agents.
 
-A two-part portfolio project:
+## Key findings
 
-1. **Analysis:** rebuild my Excel betting model in Python and test it honestly against the betting market.
-2. **Engineering:** turn the manual weekly workflow into an automated pipeline with two LLM agents (tool use), running on GitHub Actions.
+- **The model has no edge.** It beats a naive baseline but loses to the market by 0.016-0.018 log loss - in all 14 J1 seasons (3,057 matches, Pinnacle closing odds) and all 3 J2 seasons (988). The 20-40% "edges" that were existing within the Excel model were model error.
 
-> Not betting advice. The main finding of part 1 is that the model has **no edge**.
+- **The model loses where it disagrees with the market.** When market and model agree, the model is almost as good as Pinnacle. Most of the gap comes from underrating favourites.
+
+- **A promising improvement did not survive out-of-sample.** Last season's xG as a starting point passed a pre-registered test on 2023-24 by 0.0002 - and shrank to noise on 2025. It was not added to the pipeline.
+
+- **The weekly pipeline runs on its own** (GitHub Actions, twice a week) for about $0.50 per month. Code does everything with a right answer; LLM agents only match team names and interpret news - and code validates their output.
+
+**Stack:** Python (pandas, requests, BeautifulSoup, matplotlib), SQLite, GitHub Actions, Anthropic API (tool use, own agent loop – no framework), pytest.
+
+> Not betting advice.
 
 ---
 
@@ -13,290 +21,97 @@ A two-part portfolio project:
 
 ### 1. Problem
 
-I built a Poisson goal model in Excel to find value bets in the Japanese J2 League.
-The model regularly reported "edges" of 20–40 % against bookmaker odds – too high
-not to be suspicious of.
-
-The goal is to rebuild the model in Python and test it properly:
-**Does a team-strength Poisson model produce better probabilities than the betting market?**
+My Excel Poisson model for the Japanese J2 league regularly reported "edges" of 20-40% against bookmaker odds - too high not to be suspicious of. The question: **Does a team-strength Poisson model produce better probabilities than the betting market?**
 
 ### 2. Data
 
-| Source | Content | Used for |
-|---|---|---|
-| API-Football (free tier) | J2 results 2022–2024 (1,304 regular-season matches) | Model development, choice of k |
-| football-data.co.uk | J1 results + Pinnacle closing odds 2012–2025 (4,613 matches) | Market comparison (sharp market) |
-| CheckBestOdds | J2 odds 2022–2024 (1,301 matches) | Market comparison (J2) |
-| OddsPapi (free tier) | Current J2 fixtures, results, Pinnacle / Mr Green / bet365 odds | Weekly pipeline (part 2) |
-| Own Excel sheet (archived) | J2 results, rounds 1–10 of the 2026/27 season | One-off import as starting point for the current season – no longer updated |
+| Source                   | Content                                                       | Used for                         |
+|--------------------------|---------------------------------------------------------------|----------------------------------|
+| API-Football (free tier) | J2 results 2022–2024 (1,304 regular-season matches)           | Model development, choice of k   |
+| football-data.co.uk      | J1 results + Pinnacle closing odds 2012–2025 (4,613 matches)  | Market comparison (sharp market) |
+| CheckBestOdds            | J2 odds 2022–2024 (1,301 matches)                             | Market comparison (J2)           |
+| OddsPapi (free tier)     | Current J2 fixtures, results and odds                         | Weekly pipeline (part 2)         |
 
 Data quality issues found and handled:
-- API data includes promotion play-off matches (3 per season) – excluded, as they are
-  not regular league matches.
-- The J1 file stores the league name both as "J1 League" and " J1 League" (leading space).
-  Filtering without stripping would silently drop ~50 % of matches.
-- Season is stored as both integers (2024) and text ("2026/2027") – normalised to start year.
-- 12 J2 teams have different names in the two J2 sources (e.g. "Ichihara Chiba" vs.
-  "JEF United Chiba"). Mapped manually and verified: the winner matches in all 1,301 games.
+- Promotion play-off matches (3 per season) excluded - not regular league matches.
+- The J1 file stores the league as both "J1 League" and " J1 League" (leading space). Filtering without stripping would silently drop ~50 % of matches.
+- 12 J2 teams are named differently in the two J2 sources. Mapped manually and verified: The winner matches in all 1,301 games.
 
 ### 3. Method
 
-**Model.** Each team gets an attack and a defence rating relative to the league average
-(1.00 = average). Expected goals:
+**Model.**
+Each team gets an attack and a defence rating relative to the league average. Expected goals:
 
 ```
 λ_home = league avg home goals × attack(home) × defence(away)
 λ_away = league avg away goals × attack(away) × defence(home)
 ```
 
-Goals are assumed to follow independent Poisson distributions. Summing the probabilities
-of all scorelines (0–10 goals) gives P(home win), P(draw) and P(away win).
+Goals follow independent Poisson distributions; summing all scorelines gives P(home), P(draw), P(away).
 
-**Shrinkage (k).** With few matches, ratings are noisy – a team that scores 4 goals in one
-match looks like a great attacking team. Each team is therefore given k "virtual"
-league-average matches, pulling ratings towards 1.00. As a team plays more matches, its
-own data takes over. Tested on J2 2022–2024: k = 0 (no shrinkage) was clearly worst
-(log loss 1.0635), k = 10–15 best (1.0490). k = 12 is used.
+**Shrinkage (k).** Early in a season, ratings are noisy. Each team gets k "virtual" average matches, pulling ratings towards the average until real data takes over. k=0 was clearly worst (log loss 1.0635), k=10-15 best (1.0490). k=12 is used.
 
-**Walk-forward backtest.** For every match day, the model is trained *only* on matches
-played before that day, then predicts that day's matches. This mirrors real use.
-Training on the full season would let the model see the results it is predicting
-(look-ahead bias) and make it look better than it actually is.
-Predictions start once 100 matches of the season have been played.
+**Walk-forward backtest.** For every match day, the model only sees matches played before that day - no look-ahead bias.
 
-**Market comparison.** Bookmaker odds contain a margin, so implied probabilities (1/odds)
-sum to more than 100 %. The margin is removed by scaling the three implied probabilities
-so they sum to 1. Pinnacle closing odds are used for J1 because Pinnacle is a low-margin,
-sharp bookmaker and closing odds contain the most information – the hardest benchmark to beat.
+**Market comparison.** The bookmaker margin is removed by scaling implied probabilities to sum to 1. Pinnacle closing odds are the hardest benchmark: low margin, most information
 
-**Metric.** Log loss = average of −log(probability assigned to the actual outcome).
-It rewards confident correct predictions and heavily punishes confident wrong ones –
-the penalty grows towards infinity as the probability given to the actual outcome
-approaches 0. Lower is better. A naive baseline (league-wide home/draw/away frequencies)
-is included to show whether the model adds anything at all.
+**Metric.** Log loss=average of -log(probability given to the actual outcome). Lower is better. It punishes confident wrong predictions hard - the penalty goes to infinity as the probability approaches 0.
 
 ### 4. Results
 
-**Decision rule (set before running the test):** if the model's log loss is more than
-0.01 worse than the market, the model has no edge and should not be used for betting.
+**Decision rule (set before running the test):** if the model is more than 0.01 log loss worse than the market, it has no edge.
 
-#### J1 vs. Pinnacle closing odds – 2012–2025, 3,057 matches (k = 12)
+|                         | J1 vs. Pinnacle (3,057 matches) | J2 vs. CheckBestOdds (988 matches) |
+|-------------------------|---------------------------------|------------------------------------|
+| Baseline                | 1.0822                          | 1.0887                             |
+| Model                   | 1.0475                          | 1.0513                             |
+| Market (margin removed) | 1.0292                          | 1.0357                             |
+| Gap model – market      | 0.018 (all 14 seasons)          | 0.016 (all 3 seasons)              |
 
-| | Log loss |
-|---|---|
-| Baseline | 1.0822 |
-| Model | 1.0475 |
-| Market (Pinnacle, margin removed) | **1.0292** |
+**Betting simulation (J1)** – bet 1 unit whenever model edge (p × odds − 1) exceeds a threshold:
 
-- The model beats the naive baseline, so team ratings contain real information.
-- The market beats the model by 0.018 – **in all 14 seasons**.
+| Odds             | Edge > | Bets  | ROI    | ± 1 SE |
+|------------------|--------|-------|--------|--------|
+| Pinnacle closing | 0 %    | 3,679 | −4.0 % | 2.7 %  |
+| Pinnacle closing | 20 %   | 1,192 | −4.6 % | 5.2 %  |
+| Best available   | 0 %    | 4,245 | −0.1 % | 2.6 %  |
 
-**Betting simulation** – bet 1 unit whenever model edge (p × odds − 1) exceeds a threshold:
+Bets with model edges above 20 % lost money: the large edges were model error, not market error. **Conclusion: no edge. Betting on the model was stopped.**
 
-| Odds | Edge > | Bets | ROI | ± 1 SE |
-|---|---|---|---|---|
-| Pinnacle closing | 0 % | 3,679 | −4.0 % | 2.7 % |
-| Pinnacle closing | 20 % | 1,192 | −4.6 % | 5.2 % |
-| Best available | 0 % | 4,245 | −0.1 % | 2.6 % |
+### 5. Where does the model lose?
 
-Bets where the model saw an edge above 20 % lost money. The large edges were model error,
-not market error.
+Per-match diagnostic ([reports/diagnose_gap.md](reports/diagnose_gap.md)):
 
-#### J2 vs. CheckBestOdds – 2022–2024, 988 matches (k = 12)
+![Mean log-loss gap by model–market disagreement](reports/diagnose_gap.png)
 
-| | Log loss |
-|---|---|
-| Baseline | 1.0887 |
-| Model | 1.0513 |
-| Market (CheckBestOdds, margin removed) | **1.0357** |
+- **When model and market agree (< 5 pp), the model is almost as good as Pinnacle** (J1: +0.0007 per match). In J1, 71% of the gap comes from the 24% of matches with more than 10pp disagreements.
+- **The model underrates favourites.** J1 favourites win 48.4 %; the model says 44.9 %, the market 47.4 %. Likely cause: shrinkage and restarting every season pull strong teams together. J2 points in the same way, but within noise.
+- **Draws are not the problem** – the model's draw rate matches reality in both leagues.
+- **Implication:** large model-market disagreements are mostly model error - which is why the report agent (part 2) is tested on exactly those matches.
 
-- The market beats the model by 0.016 – **in all 3 seasons**.
-- Betting on model edges: ROI between −4 % and 0 % (± 5–9 %) – no sign of an edge.
+### 6. Follow-up: does last season's xG help?
 
-**Conclusion:** the model is 0.016–0.018 worse than the market in both leagues, well above
-the 0.01 threshold. **The model has no edge.** The 20–40 % edges from the Excel model were
-model error. Betting on the model was stopped.
+Idea: start each team from last season's xG rating instead of the league average. Both tests were pre-registered (rule committed before running them): the xG version must improve log loss by **at least 0.005**.
 
-### 5. Limitations
+| Test                                      | Matches | Improvement | ± 1 SE | Verdict              |
+|-------------------------------------------|---------|-------------|--------|----------------------|
+| J2 2023–24 (where the idea was developed) | 800     | −0.0052     | 0.0036 | Passes by 0.0002     |
+| J2 2025 (out-of-sample)                   | 360     | −0.0011     | 0.0047 | Fails – within noise |
 
-- **J2 odds quality.** CheckBestOdds shows "the last highest odds recorded" from an unknown
-  set of bookmakers – a weaker benchmark than Pinnacle closing odds. The model still loses to it.
-- **Closing vs. betting odds.** Bets were placed earlier in the week, at odds that may be
-  easier to beat than closing odds.
-- **Missing information.** The model only uses goals. The market also prices in injuries,
-  line-ups, xG, travel and last season's form.
-- **Season-only data.** The model restarts every season and ignores previous seasons.
-- **Choice of k.** k was chosen on J2 data and evaluated on J1, so the J1 result is
-  out-of-sample with respect to k. The J2 result is not: k was tuned on the same J2 matches
-  used in the J2 market test, which slightly flatters the model. Since the model still loses
-  to the market, this does not change the conclusion.
+The 2023–24 result was most likely partly luck. **Not added to the pipeline.** Full method and secondary variants: [src/backtest_xg_prior.py](src/backtest_xg_prior.py).
 
-### 6. Follow-up: does last season's xG help? (pre-registered 26 Oct 2026)
+### 7. Limitations
 
-Per-match xG for J2 is not freely available, but J.League publishes each club's **season
-total xG and xGA**. A season total cannot be used *within* the same season without
-look-ahead bias, but last season's total is known before the new season starts. So the
-test is: start each team from its previous-season xG rating instead of from the league
-average.
-
-**Variant.** Same model, but shrinkage pulls towards last season's xG rating instead of 1.00:
-
-```
-prior_att = (team xG per match last season) / (league xG per match last season)
-prior_def = (team xGA per match last season) / (league xGA per match last season)
-att = (goals for + k · avg · prior_att) / (expected goals for + k · avg)
-```
-
-Teams without a J2 season the year before (promoted/relegated) get 1.00 – identical to
-the current model. k stays at 12; it is **not** re-tuned for the variant.
-
-**Data.** Club xG/xGA 2022–2024 from J.League's official stats pages, collected once by
-hand. Test seasons: 2023 (prior from 2022) and 2024 (prior from 2023), ~800 matches.
-
-**Evaluation.** Same walk-forward backtest and log loss as above. Primary comparison:
-matches from the point where 20 matches of the season have been played (the prior can only
-matter early, when the current model has little data). Both models are scored on exactly
-the same matches. Secondary (reported, not decisive): the original setup starting after
-100 matches.
-
-**Decision rule (set before running the test):** the xG prior only counts as an improvement
-if its log loss is **at least 0.005 lower** than the current model's on the primary
-comparison, 2023–2024 combined. The 0.01 rule against the market still applies.
-
-**Result** (`src/backtest_xg_prior.py`):
-
-| J2 2023–2024 | Matches | Current model | xG prior | Difference | ± 1 SE |
-|---|---|---|---|---|---|
-| **Primary** (from 20 matches played) | 800 | 1.0493 | **1.0442** | −0.0052 | 0.0036 |
-| – 2023 | 440 | 1.0706 | 1.0690 | −0.0016 | 0.0048 |
-| – 2024 | 360 | 1.0233 | 1.0138 | −0.0095 | 0.0056 |
-| Secondary (from 100 matches played) | 632 | 1.0389 | 1.0317 | −0.0073 | 0.0030 |
-| Market (CheckBestOdds), primary matches | 799 | | | market: **1.0283** | |
-
-- **By the pre-registered rule the xG prior is an improvement** – but only just: −0.0052
-  against a threshold of −0.005, and the difference is only ~1.4 standard errors from zero.
-  It is a weak, not a proven, improvement; most of it comes from 2024.
-- **Unexpected:** the gain is *not* concentrated early in the season, where I expected it.
-  In the first ~100 matches the xG prior is slightly worse (1.0912 vs 1.0884); the gain
-  comes later. I don't have a confirmed explanation.
-- **Against the market nothing changes.** The xG prior is still 0.016 behind the market,
-  well above the 0.01 threshold. Better model, still no edge.
-- Caveat: k = 12 was tuned for the current model on these seasons, which if anything
-  favours the current model.
-
-#### 6b. Out-of-sample check on 2025 (pre-registered 26 Oct 2026, before the 2025 run)
-
-2023–2024 is where the idea was developed, so the real test is a season nothing was tuned
-on. 2025 J2 results (380 matches) come from the J.League data site; the prior uses 2024 xG
-(known before the 2025 season). API-Football's free plan does not cover 2025. No odds for
-2025, so no market comparison.
-
-- **Primary (decides):** the exact variant above, unchanged (k = 12, newcomers = 1.00,
-  from 20 matches played). Same rule: the xG prior must be **at least 0.005 better** than
-  the current model on 2025. If not, it does not go into the weekly pipeline.
-- **Secondary (exploratory, does not decide):** same, but teams without a J2 season the
-  year before start from the average first-season xG rating of earlier newcomers, measured
-  on 2023–2024: relegated from J1 att 1.29 / def 0.74 (n = 3), promoted from J3 att 0.88 /
-  def 1.22 (n = 4). Small samples. 6 of the 20 teams in 2025 are newcomers (3 relegated,
-  3 promoted).
-
-**Result 2025** (`src/backtest_xg_prior.py 2025`, 360 matches from 20 played):
-
-| 2025 | Current model | xG prior | Difference | ± 1 SE |
-|---|---|---|---|---|
-| **Primary** | 1.0770 | 1.0759 | **−0.0011** | 0.0047 |
-| Secondary (newcomer priors) | 1.0770 | 1.0724 | −0.0046 | 0.0079 |
-| Primary variant, from 100 played | 1.0763 | 1.0714 | −0.0048 | 0.0037 |
-
-- **The improvement did not hold up.** On the season nothing was tuned on, the xG prior is
-  only 0.0011 better – far from the 0.005 threshold and well within noise. By the
-  pre-registered rule it does **not** go into the weekly pipeline.
-- The 2023–2024 result (−0.0052) was most likely partly luck: it passed by 0.0002, and
-  the honest out-of-sample number is much smaller.
-- The secondary variant (starting newcomers above/below average) moves in
-  the expected direction (−0.0046), but the uncertainty is larger than the effect, the
-  newcomer priors rest on 7 teams, and it was not the deciding test. Worth a new
-  pre-registered test on the 2026/27 season, not a conclusion.
-- **Overall conclusion for xG: no robust improvement from last season's xG.**
+- **J2 odds quality.** CheckBestOdds is a weaker benchmark than Pinnacle - the model still loses to it.
+- **Missing information.** The model only uses goals; the market also prices injuries, line-ups, xG etc.
+- **Season-only data.** The model restarts every season.
+- **k tuned on J2.** The J2 market test is therefore slightly flattering to the model; J1 is out-of-sample. Neither changes the conclusion.
 
 ---
 
 ## Part 2 – Automated weekly pipeline with LLM agents
 
-The weekly workflow used to be manual: type results and odds into Excel, run the model,
-ask a chatbot about the matches, log bets by hand. It now runs on its own every Monday and
-Thursday – Excel and the manual bet log are retired.
-
-### Architecture
-
-```mermaid
-flowchart LR
-    A[OddsPapi API] -->|results| B[fetch_results.py]
-    A -->|fixtures + odds| C[fetch_weekly.py]
-    B --> D[(SQLite: j2.db)]
-    C --> D
-    E[name_agent.py<br/>LLM agent] -->|team-name mapping| D
-    D --> F[predict_upcoming.py<br/>Poisson model]
-    F -->|predictions vs Pinnacle| D
-    D --> G[report_agent.py<br/>LLM agent + web search]
-    G --> H[reports/report_DATE.md]
-```
-
-**Design principle: code for anything that has a right answer, LLM only where judgement
-is needed.** Fetching data, the model and the choice of matches are deterministic code.
-The LLM matches messy team names and interprets news.
-
-### The two agents
-
-Both use the same small agent loop (`src/agent.py`, no framework): the model chooses
-tools, *my* code runs them and sends the results back, until the task is solved.
-
-| Agent | Task | Tools | Validation (code checks the LLM) |
-|---|---|---|---|
-| `name_agent.py` | Map OddsPapi team names to the model's names (e.g. "RB Omiya Ardija" → "Omiya Ardija") | `run_sql` (read-only), `save_team_mapping` | Every team mapped, names must exist, no duplicates – otherwise rejected and the agent must fix it |
-| `report_agent.py` | For the 3 matches where model and market disagree most: find news (injuries, suspensions, form) and judge whether it explains the gap | `web_search`, `run_sql`, `save_report` | All 6 teams named exactly, sources with links, max length – otherwise rejected |
-
-### Evaluation
-
-- **Name agent:** 20/20 teams correct (6/6 of the names that differ between sources),
-  **5/5 runs** – stable on this task. Cost ≈ $0.002 per run.
-- **Report agent:** first report fact-checked against the database – **9 of 11 checkable
-  claims correct**; the 2 errors were home/away mix-ups. **Root cause:** the agent had to read
-  home/away columns from raw tables itself (and the results table uses OddsPapi's team names).
-  **Fix:** code now computes each team's last 5 results from the team's own perspective
-  (W/D/L, home/away, mapped names) and passes them to the agent – facts from code, judgement
-  from the LLM. Next report after the fix: **9 of 9 result claims correct**, home/away included
-  (one report – a small sample, not proof). Injury claims cannot be checked
-  against the database and still need to be verified against the cited sources.
-  Cost ≈ $0.10–0.15 per report (≈ $0.50–0.70 per month).
-- **Experiment – can an LLM with news access beat the market?** From 22 Oct 2026 the agent
-  also gives its own H/D/A forecast for the 3 matches it reviews; code stores it and scores it
-  against model and market by log loss (`reports/evaluation.md`). **Rule set before any forecast
-  was scored:** the agent only counts as beating the market if its log loss is lower than
-  Pinnacle's over at least 30 settled matches. Expected outcome: it does not – the market already
-  has the same news. Each report also ends with a code-generated table of every match in the round.
-- **Known weakness:** an LLM asked to *explain* a disagreement will usually find an
-  explanation (post-hoc rationalisation). The real test is the results: over the season,
-  the stored predictions show whether the market was right in the matches the agent flagged.
-
-### Safeguards
-
-| Risk | Safeguard |
-|---|---|
-| Runaway agent loop | Max turns, token budget per run, max 2 reminders if the agent stops early |
-| Agent changes data | `run_sql` opens the database read-only (`mode=ro`) **and** only allows SELECT |
-| LLM output is wrong | Every save goes through a validation function that can reject it |
-| API costs | $5 prepaid credits, $5 monthly spend limit, no auto-reload, cheapest model (Haiku), max 6 web searches per report, cost logged per call (incl. Haiku's higher price above 100k prompt tokens) |
-| API quota (OddsPapi, 250 calls/month) | `MAX_CALLS` per run; odds only fetched ≤ 4 days before kick-off; results only fetched once |
-| Rate limits (HTTP 429) | Retry with exponential backoff |
-| Truncated responses | Cut-off tool calls are rejected and the agent is asked to retry shorter |
-| Traceability | Every agent run logged to `data/agent_log.jsonl` (tools, errors, tokens, cost); every prediction stored with timestamp and model version – replaces the old manual bet log |
-
-### Automation
-
-`.github/workflows/weekly.yml` runs Monday and Thursday at 05:17 UTC:
-results → fixtures & odds → predictions → report, then commits the updated database
-and report back to the repo. API keys are stored as GitHub Secrets.
+The manual workflow (Excel, chatbot, hand-written bet log) now runs on its own every Monday and Thursday on GitHub Actions, and commits the updated database and report back to the repo.
 
 > **This is the public copy of a private repo.** The pipeline runs in the private repo,
 > because the database holds third-party results and odds (football-data.co.uk,
@@ -304,28 +119,67 @@ and report back to the repo. API keys are stored as GitHub Secrets.
 > evaluation are identical; `data/` is left out. The workflow is included as
 > documentation and only runs in the private repo.
 
-Lessons learned while building it: the agent loop failed on a truncated tool call
-(fixed by answering it with an error), and the first automated run hit OddsPapi's
-rate limit because two scripts called the same endpoint seconds apart (fixed with retry
-and backoff) – both errors only appeared outside local testing.
+```mermaid
+flowchart LR
+    API[OddsPapi API] -->|results| FR[fetch_results.py]
+    API -->|fixtures + odds| FW[fetch_weekly.py]
+    FR --> DB[(SQLite: j2.db)]
+    FW --> DB
+    DB <-->|team-name mapping| NA[name_agent.py<br/>LLM agent]
+    DB --> PU[predict_upcoming.py<br/>Poisson model]
+    PU -->|predictions vs Pinnacle| RA[report_agent.py<br/>LLM agent + web search]
+    RA --> R[reports/report_DATE.md]
+```
+
+**Design principle: code for anything with a right answer, LLM only where judgement is needed.**
+
+### The two agents
+
+Both use the same small agent loop (`src/agent.py`, no framework): the model picks tools, my code runs them and returns the results.
+
+| Agent           | Task                                                                                                                              | Tools                                  | Code validates                                   |
+|-----------------|-----------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|--------------------------------------------------|
+| name_agent.py   | Map OddsPapi team names to the model's names                                                                                      | run_sql (read-only), save_team_mapping | Every team mapped, names exist, no duplicates    |
+| report_agent.py | For the 3 biggest model–market disagreements: find news, pick a lean (market or model) backed by one checkable fact, give its own H/D/A forecast | web_search, run_sql, save_report       | Exact team names, sources with links, max length |
+
+### Evaluation
+
+- **Name agent:** 20/20 teams correct in 5/5 runs. ≈ $0.002 per run.
+- **Report agent – facts:** first report 9/11 checkable claims correct (2 home/away mix-ups). Fix: code now computes each team's last 5 results and passes them in – facts from code, judgement from the LLM. Next report: 9/9.
+- **Report agent – can it beat the market?** Its forecasts are scored against model and market by log loss ([reports/evaluation.md](reports/evaluation.md)). Pre-registered rule: it only counts if it beats Pinnacle over at least 30 settled matches. Expected: it won't.
+- **Locked, binary verdicts.** An earlier three-level scale came out "partly" 13 times out of 15 and measured nothing. The agent now picks a side, and only its *first* call per match is scored, so a re-run cannot replace a wrong call.
+- **Model vs. market, live:** every match is scored in `reports/evaluation.md`, so the backtest gap can be checked week by week. Live odds are taken up to 4 days before kick-off, not at closing, so the live gap is not directly comparable to the backtest.
+- **Known weakness:** an LLM asked to explain a disagreement will usually find an explanation. Only the results can tell.
+
+### Safeguards
+
+| Risk                    | Safeguard                                                                                    |
+|-------------------------|----------------------------------------------------------------------------------------------|
+| Runaway agent loop      | Max turns and token budget per run                                                           |
+| Agent changes data      | Database opened read-only and only SELECT allowed                                            |
+| Wrong LLM output        | Every save goes through validation that can reject it                                        |
+| API costs               | $5 monthly limit, cheapest model, max 6 web searches per report, cost logged per run         |
+| API quota / rate limits | Call cap per run, odds only ≤ 4 days before kick-off, retry with backoff                     |
+| Truncated tool calls    | Rejected; the agent is asked to retry shorter (found in production, not in local tests)      |
+| Traceability            | Every agent run logged to data/agent_log.jsonl; every prediction stored with timestamp       |
 
 ---
 
 ## Tests
 
-`uv run pytest` – four tests of the parts the conclusion rests on (`tests/test_model.py`):
+`uv run pytest` – 7 tests of the parts the conclusions rest on.
 
-| Test | Why it matters |
-|---|---|
-| H/D/A probabilities sum to 1 | Log loss is only meaningful for proper probabilities. (The 0–10 goal grid loses ≈0.0001 – documented, negligible.) |
-| Margin removal | Without it, market probabilities sum to ~1.04, which lowers the market's log loss and makes the model look worse than it is. |
-| Shrinkage | One 4–0 win gives attack 2.8 and defence 0.0 with k = 0 – the kind of rating that produced the Excel model's 20–40 % "edges". k = 12 pulls it to 1.17 / 0.94. |
-| No look-ahead | Changing *future* results must not change predictions up to and including that day. Verified to fail if training uses `<=` instead of `<`, or the whole season. |
+| Test                                          | Checks that…                                                                 |
+|-----------------------------------------------|------------------------------------------------------------------------------|
+| test_probabilities_sum_to_one                 | home/draw/away probabilities sum to 1                                        |
+| test_no_vig_removes_margin                    | the bookmaker margin is removed before comparing with the market             |
+| test_shrinkage_pulls_towards_average          | one big win doesn't make a team look like the best in the league             |
+| test_no_look_ahead                            | changing all future results to 9–0 doesn't change today's predictions        |
+| test_first_lean_is_locked                     | only the agent's first call per match counts, whatever the row order         |
+| test_field_scored_from_first_row_that_has_it  | the scored forecast is the first one that exists, not the latest             |
+| test_rerun_does_not_change_scored_lean        | end-to-end: a re-run with the opposite call doesn't change the evaluation    |
 
 ## How to run
-
-The database is not included (see *Automation*), so start by rebuilding it with the
-scripts below – they download the data into `data/j2.db`.
 
 ```bash
 uv sync                                   # install dependencies
@@ -333,38 +187,29 @@ uv sync                                   # install dependencies
 ```
 
 **Part 1 – backtests**
+
 ```bash
 uv run python src/fetch_history.py        # J2 results 2022–2024 -> data/j2.db
 uv run python src/backtest.py             # J2 backtest + choice of k
-
-# download JPN.xlsx from football-data.co.uk to data/
-uv run python src/import_j1.py            # J1 results + odds -> data/j2.db
+uv run python src/import_j1.py            # J1 results + odds (JPN.xlsx from football-data.co.uk)
 uv run python src/backtest_market.py      # J1: model vs. Pinnacle
-
-uv run python src/fetch_cbo.py            # J2 odds pages -> data/cbo/
-uv run python src/parse_cbo.py            # J2 odds -> data/j2.db
+uv run python src/fetch_cbo.py && uv run python src/parse_cbo.py   # J2 odds
 uv run python src/backtest_j2_market.py   # J2: model vs. CheckBestOdds
-
-# data/xg_season.csv (season,team,xg,xga) – club xG/xGA from jleague.jp, collected by hand
-uv run python src/backtest_xg_prior.py    # follow-up: last season's xG as prior (section 6)
-# data/j2_2025_results.csv (date,home,away,home_goals,away_goals) – from data.j-league.or.jp
-uv run python src/backtest_xg_prior.py 2025   # out-of-sample check on 2025 (section 6b)
+uv run python src/backtest_xg_prior.py [2025]   # xG follow-up (section 6)
 ```
 
 **Part 2 – weekly pipeline** (normally run by GitHub Actions)
+
 ```bash
 uv run python src/fetch_results.py        # new results
 uv run python src/fetch_weekly.py         # fixtures + odds
 uv run python src/name_agent.py           # only when new team names appear
-uv run python src/eval_name_agent.py      # check the mapping against a hand-made answer key
-uv run python src/predict_upcoming.py     # predictions vs. Pinnacle / Mr Green
+uv run python src/predict_upcoming.py     # predictions vs. market
 uv run python src/report_agent.py         # weekly report -> reports/
 ```
 
 ## Next steps
 
-- **xG – answered for season-level data (section 6).** Last season's xG as a starting point
-  passed on 2023–2024 by a hair but did not hold up out-of-sample on 2025. Not in the
-  pipeline. Still open: per-match xG within the season (no free J2 source found), and
-  newcomer priors for promoted/relegated teams (promising direction, too little data –
-  could be pre-registered and tested on 2026/27).
+- Fix the favourite underrating found in section 5 (e.g. carry part of last season's ratings over) – pre-register before testing.
+- Newcomer priors for promoted/relegated teams – pre-registered test on 2026/27.
+- After a full season: is the report agent better than the market over 30+ matches?
